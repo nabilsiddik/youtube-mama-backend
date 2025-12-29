@@ -1,5 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { spawn } from "child_process";
+import path from "path";
+import fs from "fs";
 
 const videoRouter = Router();
 
@@ -86,6 +88,49 @@ videoRouter.get("/thumbnail", async (req: Request, res: Response) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error downloading image" });
+  }
+});
+
+// Download video
+videoRouter.get("/download", async (req, res) => {
+  const url = req.query.videoUrl as string;
+  if (!url) return res.status(400).json({ message: "URL is required" });
+
+  try {
+    const downloadsDir = path.join(process.cwd(), "downloads");
+    if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir);
+
+    const outputFile = path.join(downloadsDir, "video.mp4");
+
+    const ytDlp = spawn("yt-dlp", [
+      "-f",
+      "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
+      "--merge-output-format",
+      "mp4",
+      "-o",
+      outputFile,
+      "--no-playlist",
+      "--js-runtimes",
+      "node",
+      url,
+    ]);
+
+    ytDlp.stdout.on("data", (data) => console.log(data.toString()));
+    ytDlp.stderr.on("data", (data) => console.error(data.toString()));
+
+    ytDlp.on("close", (code) => {
+      if (code === 0) {
+        res.download(outputFile, "video.mp4", (err) => {
+          if (err) console.error(err);
+          if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
+        });
+      } else {
+        res.status(500).json({ success: false, message: "Download failed" });
+      }
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
