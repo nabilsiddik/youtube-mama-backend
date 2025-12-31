@@ -134,4 +134,51 @@ videoRouter.get("/download", async (req, res) => {
   }
 });
 
+// download audio of youtube video
+videoRouter.get("/audio", async (req: Request, res: Response) => {
+  const { videoUrl } = req.query as { videoUrl?: string };
+
+  if (!videoUrl) {
+    return res
+      .status(400)
+      .json({ message: "Video URL is required while downloading audio" });
+  }
+
+  let finalVideoUrl = videoUrl;
+
+  if (
+    finalVideoUrl.includes("youtube.com/watch") &&
+    finalVideoUrl.includes("list=")
+  ) {
+    finalVideoUrl = finalVideoUrl?.split("&")?.[0] as string;
+  }
+
+  res.setHeader("Content-Disposition", 'attachment; filename="audio.m4a"');
+  res.setHeader("Content-Type", "audio/mp4");
+
+  const ytDlp = spawn("yt-dlp", [
+    "--no-playlist",
+    "--no-live-from-start",
+    "-f",
+    "bestaudio[ext=m4a]/bestaudio",
+    "-o",
+    "-",
+    finalVideoUrl,
+  ]);
+
+  ytDlp.stdout.pipe(res);
+
+  ytDlp.stderr.on("data", (data) => {
+    console.error(data.toString());
+  });
+
+  req.on("close", () => {
+    ytDlp.kill("SIGKILL");
+  });
+
+  ytDlp.on("close", () => {
+    res.end();
+  });
+});
+
 export default videoRouter;
