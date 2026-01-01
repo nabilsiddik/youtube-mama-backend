@@ -2,6 +2,8 @@ import { Router, type Request, type Response } from "express";
 import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
+import axios from "axios";
+import { parseJson3Captions } from "../../utils/parseJson3Captions.js";
 
 const videoRouter = Router();
 
@@ -179,6 +181,50 @@ videoRouter.get("/audio", async (req: Request, res: Response) => {
   ytDlp.on("close", () => {
     res.end();
   });
+});
+
+// Get captions
+videoRouter.get("/captions", async (req: Request, res: Response) => {
+  const { captionUrl } = req.query as { captionUrl?: string };
+
+  if (!captionUrl) {
+    return res.status(400).json({ message: "captionUrl is required" });
+  }
+
+  try {
+    const response = await axios.get(captionUrl, {
+      responseType: "json",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      },
+    });
+
+    return res.json(response.data);
+  } catch (error) {
+    console.error("Caption fetch failed:", error);
+    return res.status(500).json({ message: "Failed to fetch captions" });
+  }
+});
+
+// Get parsed caption
+videoRouter.get("/captions/parsed", async (req, res) => {
+  try {
+    const { captionUrl } = req.query as { captionUrl?: string };
+    if (!captionUrl) return res.status(400).json({});
+
+    const json = (await axios.get(captionUrl)).data;
+
+    console.log("RAW JSON3:", JSON.stringify(json, null, 2));
+
+    const segments = parseJson3Captions(json);
+
+    console.log("Parsed segments:", segments);
+
+    res.json(segments);
+  } catch (err) {
+    console.log("Something went wrong while parsing caption.", err);
+  }
 });
 
 export default videoRouter;
