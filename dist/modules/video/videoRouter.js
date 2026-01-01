@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import axios from "axios";
 import { parseJson3Captions } from "../../utils/parseJson3Captions.js";
+import { spawnYtDlp } from "../../utils/ytDlp.js";
 const videoRouter = Router();
 // Get full video info
 videoRouter.get("/info", (req, res) => {
@@ -15,7 +16,7 @@ videoRouter.get("/info", (req, res) => {
         });
     }
     // Spawn yt-dlp process
-    const ytDlp = spawn("yt-dlp", ["-j", url]);
+    const ytDlp = spawnYtDlp(["-j", url]);
     let data = "";
     let errorData = "";
     // Collect stdout data
@@ -84,7 +85,7 @@ videoRouter.get("/download", async (req, res) => {
         if (!fs.existsSync(downloadsDir))
             fs.mkdirSync(downloadsDir);
         const outputFile = path.join(downloadsDir, "video.mp4");
-        const ytDlp = spawn("yt-dlp", [
+        const ytDlp = spawnYtDlp([
             "-f",
             "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
             "--merge-output-format",
@@ -96,8 +97,6 @@ videoRouter.get("/download", async (req, res) => {
             "node",
             url,
         ]);
-        ytDlp.stdout.on("data", (data) => console.log(data.toString()));
-        ytDlp.stderr.on("data", (data) => console.error(data.toString()));
         ytDlp.on("close", (code) => {
             if (code === 0) {
                 res.download(outputFile, "video.mp4", (err) => {
@@ -132,7 +131,7 @@ videoRouter.get("/audio", async (req, res) => {
     }
     res.setHeader("Content-Disposition", 'attachment; filename="audio.m4a"');
     res.setHeader("Content-Type", "audio/mp4");
-    const ytDlp = spawn("yt-dlp", [
+    const ytDlp = spawnYtDlp([
         "--no-playlist",
         "--no-live-from-start",
         "-f",
@@ -179,9 +178,7 @@ videoRouter.get("/captions/parsed", async (req, res) => {
         if (!captionUrl)
             return res.status(400).json({});
         const json = (await axios.get(captionUrl)).data;
-        console.log("RAW JSON3:", JSON.stringify(json, null, 2));
         const segments = parseJson3Captions(json);
-        console.log("Parsed segments:", segments);
         res.json(segments);
     }
     catch (err) {
