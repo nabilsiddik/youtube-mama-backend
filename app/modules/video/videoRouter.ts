@@ -1,15 +1,15 @@
+import ytdlp from "yt-dlp-exec";
+import ytdlpExec from "yt-dlp-exec";
 import { Router, type Request, type Response } from "express";
-import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
 import axios from "axios";
 import { parseJson3Captions } from "../../utils/parseJson3Captions.js";
-import { spawnYtDlp } from "../../utils/ytDlp.js";
 
 const videoRouter = Router();
 
 // Get full video info
-videoRouter.get("/info", (req: Request, res: Response) => {
+videoRouter.get("/info", async (req: Request, res: Response) => {
   const { url } = req.query;
 
   if (!url || typeof url !== "string") {
@@ -19,49 +19,23 @@ videoRouter.get("/info", (req: Request, res: Response) => {
     });
   }
 
-  // Spawn yt-dlp process
-  const ytDlp = spawnYtDlp(["-j", url]);
+  try {
+    const info = await ytdlp(url, {
+      dumpSingleJson: true,
+      noPlaylist: true,
+    });
 
-  let data = "";
-  let errorData = "";
-
-  // Collect stdout data
-  ytDlp.stdout.on("data", (chunk) => {
-    data += chunk.toString();
-  });
-
-  // Collect stderr data
-  ytDlp.stderr.on("data", (chunk) => {
-    errorData += chunk.toString();
-  });
-
-  ytDlp.on("close", (code) => {
-    if (errorData) {
-      console.error("yt-dlp error:", errorData);
-    }
-
-    if (code !== 0) {
-      return res.status(500).json({
-        success: false,
-        message: "yt-dlp failed to fetch video info",
-        error: errorData,
-      });
-    }
-
-    try {
-      const info = JSON.parse(data);
-      res.json({
-        success: true,
-        info,
-      });
-    } catch (e) {
-      console.error("Failed to parse yt-dlp output:", e);
-      res.status(500).json({
-        success: false,
-        message: "Failed to parse video info",
-      });
-    }
-  });
+    return res.json({
+      success: true,
+      info,
+    });
+  } catch (error) {
+    console.error("yt-dlp info error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch video info",
+    });
+  }
 });
 
 // Downlod thumbnail
@@ -74,7 +48,6 @@ videoRouter.get("/thumbnail", async (req: Request, res: Response) => {
 
   try {
     const response = await fetch(url);
-
     if (!response.ok) {
       return res.status(500).json({ message: "Failed to fetch image" });
     }
@@ -95,9 +68,11 @@ videoRouter.get("/thumbnail", async (req: Request, res: Response) => {
 });
 
 // Download video
-videoRouter.get("/download", async (req, res) => {
-  const url = req.query.videoUrl as string;
-  if (!url) return res.status(400).json({ message: "URL is required" });
+videoRouter.get("/download", async (req: Request, res: Response) => {
+  const videoUrl = req.query.videoUrl as string;
+  if (!videoUrl) {
+    return res.status(400).json({ message: "URL is required" });
+  }
 
   try {
     const downloadsDir = path.join(process.cwd(), "downloads");
@@ -105,80 +80,63 @@ videoRouter.get("/download", async (req, res) => {
 
     const outputFile = path.join(downloadsDir, "video.mp4");
 
-    const ytDlp = spawnYtDlp([
-      "-f",
-      "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
-      "--merge-output-format",
-      "mp4",
-      "-o",
-      outputFile,
-      "--no-playlist",
-      "--js-runtimes",
-      "node",
-      url,
-    ]);
-
-    ytDlp.on("close", (code) => {
-      if (code === 0) {
-        res.download(outputFile, "video.mp4", (err) => {
-          if (err) console.error(err);
-          if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
-        });
-      } else {
-        res.status(500).json({ success: false, message: "Download failed" });
-      }
+    await ytdlpExec(videoUrl, {
+      format: "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
+      mergeOutputFormat: "mp4",
+      output: outputFile,
+      noPlaylist: true,
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: "Server error" });
+
+    // Send file to client
+    res.download(outputFile, "video.mp4", (err) => {
+      if (err) console.error(err);
+      if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
   }
 });
 
 // download audio of youtube video
 videoRouter.get("/audio", async (req: Request, res: Response) => {
-  const { videoUrl } = req.query as { videoUrl?: string };
+  let videoUrl = req.query.videoUrl as string | undefined;
 
   if (!videoUrl) {
-    return res
-      .status(400)
-      .json({ message: "Video URL is required while downloading audio" });
+    return res.status(400).json({
+      message: "Video URL is required while downloading audio",
+    });
   }
 
-  let finalVideoUrl = videoUrl;
-
-  if (
-    finalVideoUrl.includes("youtube.com/watch") &&
-    finalVideoUrl.includes("list=")
-  ) {
-    finalVideoUrl = finalVideoUrl?.split("&")?.[0] as string;
+  // Strip playlist
+  if (videoUrl.includes("youtube.com/watch") && videoUrl.includes("list=")) {
+    videoUrl = videoUrl.split("&")[0];
   }
 
-  res.setHeader("Content-Disposition", 'attachment; filename="audio.m4a"');
-  res.setHeader("Content-Type", "audio/mp4");
+  try {
+    const downloadsDir = path.join(process.cwd(), "downloads");
+    if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir);
 
-  const ytDlp = spawnYtDlp([
-    "--no-playlist",
-    "--no-live-from-start",
-    "-f",
-    "bestaudio[ext=m4a]/bestaudio",
-    "-o",
-    "-",
-    finalVideoUrl,
-  ]);
+    const outputFile = path.join(downloadsDir, "audio.m4a");
 
-  ytDlp.stdout.pipe(res);
+    // ✅ Use only known YtFlags
+    await ytdlpExec(videoUrl as string, {
+      format: "bestaudio[ext=m4a]/bestaudio",
+      output: outputFile,
+      noPlaylist: true,
+      // noLiveFromStart removed
+    });
 
-  ytDlp.stderr.on("data", (data) => {
-    console.error(data.toString());
-  });
+    res.download(outputFile, "audio.m4a", (err) => {
+      if (err) console.error(err);
 
-  req.on("close", () => {
-    ytDlp.kill("SIGKILL");
-  });
-
-  ytDlp.on("close", () => {
-    res.end();
-  });
+      // Delete temp file
+      if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
+    });
+  } catch (error) {
+    console.error("Audio download failed:", error);
+    res.status(500).json({ message: "Failed to download audio" });
+  }
 });
 
 // Get captions
@@ -206,18 +164,18 @@ videoRouter.get("/captions", async (req: Request, res: Response) => {
 });
 
 // Get parsed caption
-videoRouter.get("/captions/parsed", async (req, res) => {
+videoRouter.get("/captions/parsed", async (req: Request, res: Response) => {
   try {
     const { captionUrl } = req.query as { captionUrl?: string };
     if (!captionUrl) return res.status(400).json({});
 
     const json = (await axios.get(captionUrl)).data;
-
     const segments = parseJson3Captions(json);
 
     res.json(segments);
   } catch (err) {
-    console.log("Something went wrong while parsing caption.", err);
+    console.error("Caption parsing failed:", err);
+    res.status(500).json({ message: "Failed to parse captions" });
   }
 });
 

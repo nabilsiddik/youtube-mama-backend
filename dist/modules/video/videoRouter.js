@@ -1,13 +1,13 @@
+import ytdlp from "yt-dlp-exec";
+import ytdlpExec from "yt-dlp-exec";
 import { Router } from "express";
-import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
 import axios from "axios";
 import { parseJson3Captions } from "../../utils/parseJson3Captions.js";
-import { spawnYtDlp } from "../../utils/ytDlp.js";
 const videoRouter = Router();
 // Get full video info
-videoRouter.get("/info", (req, res) => {
+videoRouter.get("/info", async (req, res) => {
     const { url } = req.query;
     if (!url || typeof url !== "string") {
         return res.status(400).json({
@@ -15,44 +15,23 @@ videoRouter.get("/info", (req, res) => {
             message: "url query param is required",
         });
     }
-    // Spawn yt-dlp process
-    const ytDlp = spawnYtDlp(["-j", url]);
-    let data = "";
-    let errorData = "";
-    // Collect stdout data
-    ytDlp.stdout.on("data", (chunk) => {
-        data += chunk.toString();
-    });
-    // Collect stderr data
-    ytDlp.stderr.on("data", (chunk) => {
-        errorData += chunk.toString();
-    });
-    ytDlp.on("close", (code) => {
-        if (errorData) {
-            console.error("yt-dlp error:", errorData);
-        }
-        if (code !== 0) {
-            return res.status(500).json({
-                success: false,
-                message: "yt-dlp failed to fetch video info",
-                error: errorData,
-            });
-        }
-        try {
-            const info = JSON.parse(data);
-            res.json({
-                success: true,
-                info,
-            });
-        }
-        catch (e) {
-            console.error("Failed to parse yt-dlp output:", e);
-            res.status(500).json({
-                success: false,
-                message: "Failed to parse video info",
-            });
-        }
-    });
+    try {
+        const info = await ytdlp(url, {
+            dumpSingleJson: true,
+            noPlaylist: true,
+        });
+        return res.json({
+            success: true,
+            info,
+        });
+    }
+    catch (error) {
+        console.error("yt-dlp info error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to fetch video info",
+        });
+    }
 });
 // Downlod thumbnail
 videoRouter.get("/thumbnail", async (req, res) => {
@@ -77,79 +56,70 @@ videoRouter.get("/thumbnail", async (req, res) => {
 });
 // Download video
 videoRouter.get("/download", async (req, res) => {
-    const url = req.query.videoUrl;
-    if (!url)
+    const videoUrl = req.query.videoUrl;
+    if (!videoUrl) {
         return res.status(400).json({ message: "URL is required" });
+    }
     try {
         const downloadsDir = path.join(process.cwd(), "downloads");
         if (!fs.existsSync(downloadsDir))
             fs.mkdirSync(downloadsDir);
         const outputFile = path.join(downloadsDir, "video.mp4");
-        const ytDlp = spawnYtDlp([
-            "-f",
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
-            "--merge-output-format",
-            "mp4",
-            "-o",
-            outputFile,
-            "--no-playlist",
-            "--js-runtimes",
-            "node",
-            url,
-        ]);
-        ytDlp.on("close", (code) => {
-            if (code === 0) {
-                res.download(outputFile, "video.mp4", (err) => {
-                    if (err)
-                        console.error(err);
-                    if (fs.existsSync(outputFile))
-                        fs.unlinkSync(outputFile);
-                });
-            }
-            else {
-                res.status(500).json({ success: false, message: "Download failed" });
-            }
+        await ytdlpExec(videoUrl, {
+            format: "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
+            mergeOutputFormat: "mp4",
+            output: outputFile,
+            noPlaylist: true,
+        });
+        // Send file to client
+        res.download(outputFile, "video.mp4", (err) => {
+            if (err)
+                console.error(err);
+            if (fs.existsSync(outputFile))
+                fs.unlinkSync(outputFile);
         });
     }
-    catch (err) {
-        console.error(err);
-        res.status(500).json({ success: false, message: "Server error" });
+    catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Server error" });
     }
 });
 // download audio of youtube video
 videoRouter.get("/audio", async (req, res) => {
-    const { videoUrl } = req.query;
+    let videoUrl = req.query.videoUrl;
     if (!videoUrl) {
-        return res
-            .status(400)
-            .json({ message: "Video URL is required while downloading audio" });
+        return res.status(400).json({
+            message: "Video URL is required while downloading audio",
+        });
     }
-    let finalVideoUrl = videoUrl;
-    if (finalVideoUrl.includes("youtube.com/watch") &&
-        finalVideoUrl.includes("list=")) {
-        finalVideoUrl = finalVideoUrl?.split("&")?.[0];
+    // Strip playlist
+    if (videoUrl.includes("youtube.com/watch") && videoUrl.includes("list=")) {
+        videoUrl = videoUrl.split("&")[0];
     }
-    res.setHeader("Content-Disposition", 'attachment; filename="audio.m4a"');
-    res.setHeader("Content-Type", "audio/mp4");
-    const ytDlp = spawnYtDlp([
-        "--no-playlist",
-        "--no-live-from-start",
-        "-f",
-        "bestaudio[ext=m4a]/bestaudio",
-        "-o",
-        "-",
-        finalVideoUrl,
-    ]);
-    ytDlp.stdout.pipe(res);
-    ytDlp.stderr.on("data", (data) => {
-        console.error(data.toString());
-    });
-    req.on("close", () => {
-        ytDlp.kill("SIGKILL");
-    });
-    ytDlp.on("close", () => {
-        res.end();
-    });
+    try {
+        const downloadsDir = path.join(process.cwd(), "downloads");
+        if (!fs.existsSync(downloadsDir))
+            fs.mkdirSync(downloadsDir);
+        const outputFile = path.join(downloadsDir, "audio.m4a");
+        // ✅ Use only known YtFlags
+        await ytdlpExec(videoUrl, {
+            format: "bestaudio[ext=m4a]/bestaudio",
+            output: outputFile,
+            noPlaylist: true,
+            // noLiveFromStart removed
+        });
+        res.download(outputFile, "audio.m4a", (err) => {
+            if (err)
+                console.error(err);
+            // Delete temp file
+            if (fs.existsSync(outputFile))
+                fs.unlinkSync(outputFile);
+        });
+    }
+    catch (error) {
+        console.error("Audio download failed:", error);
+        res.status(500).json({ message: "Failed to download audio" });
+    }
 });
 // Get captions
 videoRouter.get("/captions", async (req, res) => {
@@ -182,7 +152,8 @@ videoRouter.get("/captions/parsed", async (req, res) => {
         res.json(segments);
     }
     catch (err) {
-        console.log("Something went wrong while parsing caption.", err);
+        console.error("Caption parsing failed:", err);
+        res.status(500).json({ message: "Failed to parse captions" });
     }
 });
 export default videoRouter;
