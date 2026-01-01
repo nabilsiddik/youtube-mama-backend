@@ -14,7 +14,10 @@ app.use(express.urlencoded({ extended: true }));
 // cors setup
 app.use(
   cors({
-    origin: ["http://localhost:3000"],
+    origin: [
+      "http://localhost:3000",
+      "https://youtube-mama-frontend.vercel.app",
+    ],
     credentials: true,
   })
 );
